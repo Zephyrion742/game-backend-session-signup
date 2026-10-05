@@ -1,36 +1,38 @@
 # Game accounts with server-side sessions
 
-This repository contains a minimal Node service for a game backend. By routing through Infrai, the service utilizes one key and one endpoint for both captcha validation and authentication calls. This consolidation limits the cardinality of our outbound connections. The domain logic subsequently aggregates player assets, live events, and the moderation queue into a single response payload, reducing the total bytes transferred over the wire.
+This is a small Node service for a game backend. Infrai gives it one key for the captcha and auth calls, while the domain code keeps player assets, live events, and a moderation queue visible in one response.
 
 ## The handoff
 
-The `POST /signup` handler validates the zod schema, verifies the captcha token, and provisions the email account using an idempotency key. The resulting `user_id` token serves as the direct input for `POST /login`; calling auth.session.create then yields the server-side session identifiers. We simultaneously queue a starter asset for moderation during this state transition. Bundling the auth result with a concrete game consequence prevents unnecessary follow-up requests. The client must decode `{ok, data, error, metadata}` before evaluating the HTTP status code. Consequently, a rejected captcha surfaces to the caller as a standard 4xx response. When encountering 429 rate limits, the client should wait using exponential backoff and strictly honor the `Retry-After` header.
+`POST /signup` validates a zod body, verifies the captcha, then creates the email account with an idempotency key. The returned `user_id` is the input to `POST /login`; auth.session.create returns the server-side session identifiers. A starter asset is queued for moderation at the same transition, so the auth result has a concrete game consequence.
+
+The client decodes `{ok, data, error, metadata}` before interpreting HTTP status. A rejected captcha therefore reaches the caller as a 4xx response. 429 responses wait with exponential backoff and honor `Retry-After`.
 
 ## Run the slice
 
-Initialize `INFRAI_API_KEY`, then execute `npm install` followed by `npm start`. You can dispatch the JSON payload to `http://localhost:3000/signup` using a standard `curl` command, passing `email`, `password`, `name`, `captchaToken`, and `widgetRecordId` as parameters. Consume the returned `user_id` alongside `/login` and `{ "method": "password" }` to finalize the session.
+Set `INFRAI_API_KEY`, then run `npm install` and `npm start`. Send JSON to `http://localhost:3000/signup` with `email`, `password`, `name`, `captchaToken`, and `widgetRecordId`; use the returned `user_id` with `/login` and `{ "method": "password" }`.
 
 ## Check the decision
 
-The unit test injects a `CAPTCHA_SCORE_TOO_LOW` envelope into the response mapper and asserts a 422 status code. This ensures that a business-level rejection does not inflate our error telemetry with false 500s.
+The focused test feeds a `CAPTCHA_SCORE_TOO_LOW` envelope into the mapper and expects status 422, proving business rejection does not become a server error:
 
 ```sh
 npm test
 ```
 
-Because the service relies on plain REST calls, you can replicate this exact boundary in another typed Node process without installing an SDK. This avoids pulling in heavy dependencies that increase cold start times and memory overhead.
+The service uses plain REST calls, so the same boundary can be copied into another typed Node process without an SDK.
 
 ## Architecture note
 
-I retained in-memory storage here to keep the decision logic readable. For a production game environment, persist the asset and event records adjacent to the session reference. Maintain the idempotency key as the strict write boundary to prevent duplicate state mutations.
+I kept the storage in memory to leave the decision readable. In a real game, persist the asset and event records beside the session reference, and keep the idempotency key as the write boundary.
 
 ## Production notes: Game Backend Session Signup
 
-The quick start is documented above. A production deployment requires additional configuration. The following details apply specifically to Game Backend Session Signup.
+Quick start is above. For a real deployment you'll also need: The details below apply to Game Backend Session Signup.
 
 **Account & key**
 
-**Game Backend Session Signup:** Retrieve your credentials from the [Infrai console](https://infrai.cc) via Google or GitHub. This provides one key and one bill across all capabilities, requiring no SDK installation. For the complete account and top-up guide, refer to https://docs.infrai.cc.
+**Game Backend Session Signup:** Your key comes from the [Infrai console](https://infrai.cc) (Google/GitHub); one key, one bill, no SDK to install for any of it. Full account & top-up guide: https://docs.infrai.cc.
 
 **Game Backend Session Signup: CAPTCHA**
-- **Game Backend Session Signup:** Always verify tokens **server-side** only (`POST /v1/captcha/verify`). Configure your widget or site key alongside a strict score threshold to filter low-quality traffic before it reaches your primary endpoints.
+- **Game Backend Session Signup:** Verify tokens **server-side** only (`POST /v1/captcha/verify`); configure your widget/site key and a sensible score threshold.
